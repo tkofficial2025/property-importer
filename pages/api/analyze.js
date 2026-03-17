@@ -2,6 +2,40 @@ import Anthropic from "@anthropic-ai/sdk";
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
+// 住所から緯度経度を取得する関数（OpenStreetMap Nominatim API使用）
+async function geocodeAddress(address) {
+  try {
+    // 英語表記の住所を日本語に戻すか、そのまま使用
+    // OpenStreetMap Nominatim APIは日本語住所も対応
+    const encodedAddress = encodeURIComponent(address);
+    const url = `https://nominatim.openstreetmap.org/search?q=${encodedAddress}&format=json&limit=1&countrycodes=jp`;
+    
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'PropertyImporter/1.0' // Nominatim APIの利用規約に従う
+      }
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Geocoding API error: ${response.status}`);
+    }
+    
+    const data = await response.json();
+    
+    if (data && data.length > 0) {
+      return {
+        latitude: parseFloat(data[0].lat),
+        longitude: parseFloat(data[0].lon)
+      };
+    }
+    
+    return null;
+  } catch (error) {
+    console.error("Geocoding error:", error);
+    return null;
+  }
+}
+
 const SYSTEM_PROMPT = `あなたは不動産物件PDFを解析するAIです。PDFから以下のフィールドを抽出し、必ずJSONのみを返してください。前置きや説明は不要です。
 
 重要: 以下のフィールドは必ず英語表記で返してください。
@@ -40,6 +74,8 @@ const SYSTEM_PROMPT = `あなたは不動産物件PDFを解析するAIです。P
 - category_designers: デザイナーズか（true/false）
 - category_high_rise_residence: タワーマンションか（true/false）
 - property_information: 物件の特記事項・備考（文字列）
+- latitude: 緯度（数値、住所から取得可能な場合）
+- longitude: 経度（数値、住所から取得可能な場合）
 
 JSONのみ返すこと。`;
 
@@ -73,6 +109,21 @@ export default async function handler(req, res) {
     const text = message.content.map((c) => (c.type === "text" ? c.text : "")).join("");
     const clean = text.replace(/```json|```/g, "").trim();
     const parsed = JSON.parse(clean);
+
+    // 住所から緯度経度を取得
+    if (parsed.address && (!parsed.latitude || !parsed.longitude)) {
+      try {
+        const geocodeResult = await geocodeAddress(parsed.address);
+        if (geocodeResult) {
+          parsed.latitude = geocodeResult.latitude;
+          parsed.longitude = geocodeResult.longitude;
+        }
+      } catch (e) {
+        console.error("Geocoding error:", e);
+        // エラーが発生しても続行
+      }
+    }
+
     return res.status(200).json({ data: parsed });
   } catch (e) {
     console.error(e);

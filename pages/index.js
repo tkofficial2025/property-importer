@@ -5,6 +5,8 @@ import Head from "next/head";
 const COLUMNS = [
   { key: "title", label: "物件名", type: "text" },
   { key: "address", label: "住所", type: "text" },
+  { key: "latitude", label: "緯度", type: "number" },
+  { key: "longitude", label: "経度", type: "number" },
   { key: "price", label: "賃料（円）", type: "number" },
   { key: "management_fee", label: "管理費（円）", type: "number" },
   { key: "beds", label: "部屋数", type: "number" },
