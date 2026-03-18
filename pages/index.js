@@ -113,15 +113,72 @@ export default function Home() {
     setSaving(true);
     setSaveMsg("");
     const records = results.filter((r) => r.data).map((r) => r.data);
-    const { error } = await supabase
-      .from(process.env.NEXT_PUBLIC_SUPABASE_TABLE || "properties")
-      .insert(records);
-    if (error) {
-      setSaveMsg("❌ 保存失敗: " + error.message);
+    const tableName = process.env.NEXT_PUBLIC_SUPABASE_TABLE || "properties";
+    
+    let inserted = 0;
+    let updated = 0;
+    let errors = [];
+
+    for (const record of records) {
+      try {
+        // 物件名、住所、階数の3つで重複チェック
+        let query = supabase
+          .from(tableName)
+          .select("id")
+          .eq("title", record.title)
+          .eq("address", record.address);
+        
+        // 階数が存在する場合は階数もチェック
+        if (record.floor !== null && record.floor !== undefined) {
+          query = query.eq("floor", record.floor);
+        } else {
+          // 階数がnullの場合は、階数がnullのものとマッチ
+          query = query.is("floor", null);
+        }
+        
+        const { data: existing, error: searchError } = await query.limit(1);
+
+        if (searchError) {
+          errors.push(`検索エラー (${record.title || "不明"}): ${searchError.message}`);
+          continue;
+        }
+
+        if (existing && existing.length > 0) {
+          // 物件名と住所の両方が一致する場合、上書き
+          const { error: updateError } = await supabase
+            .from(tableName)
+            .update(record)
+            .eq("id", existing[0].id);
+
+          if (updateError) {
+            errors.push(`更新エラー (${record.title}): ${updateError.message}`);
+          } else {
+            updated++;
+          }
+        } else {
+          // 重複がない場合、新規挿入
+          const { error: insertError } = await supabase
+            .from(tableName)
+            .insert(record);
+
+          if (insertError) {
+            errors.push(`挿入エラー (${record.title}): ${insertError.message}`);
+          } else {
+            inserted++;
+          }
+        }
+      } catch (e) {
+        errors.push(`処理エラー (${record.title || "不明"}): ${e.message}`);
+      }
+    }
+
+    if (errors.length > 0) {
+      setSaveMsg(`⚠️ 一部エラー: ${inserted}件新規、${updated}件更新、${errors.length}件エラー`);
+      console.error("保存エラー:", errors);
     } else {
-      setSaveMsg(`✅ ${records.length}件を保存しました`);
+      setSaveMsg(`✅ ${inserted}件新規保存、${updated}件更新しました`);
       setHistory((prev) => [
-        { time: new Date().toLocaleString("ja-JP"), files: files.map((f) => f.name), count: records.length },
+        { time: new Date().toLocaleString("ja-JP"), files: files.map((f) => f.name), count: inserted + updated },
         ...prev,
       ]);
     }
