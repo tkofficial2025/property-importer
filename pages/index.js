@@ -449,7 +449,10 @@ function BlogWriter() {
   const [editData, setEditData]   = useState({});
   const [loading, setLoading]     = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [customTopic, setCustomTopic] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [publishingLocal, setPublishingLocal] = useState(false);
+  const [refetchingPhoto, setRefetchingPhoto] = useState(false);
   const [notice, setNotice]       = useState(null);
 
   const showNotice = (text, error = false) => {
@@ -476,11 +479,16 @@ function BlogWriter() {
   };
 
   const handleGenerate = async () => {
-    if (!confirm('新しい記事を生成しますか？（30〜60秒かかります）')) return;
+    const topicLabel = customTopic.trim() ? `「${customTopic.trim()}」` : 'AIが自動選択';
+    if (!confirm(`新しい記事を生成しますか？\nテーマ: ${topicLabel}\n（30〜60秒かかります）`)) return;
     setGenerating(true);
-    showNotice('記事を生成中... Google Trends → 日本語検索 → Claude API');
+    showNotice(customTopic.trim() ? `「${customTopic.trim()}」で記事を生成中...` : '記事を生成中... Google Trends → 日本語検索 → Claude API');
     try {
-      const res = await fetch('/api/blog-generate', { method: 'POST' });
+      const res = await fetch('/api/blog-generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customTopic: customTopic.trim() }),
+      });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
       showNotice(`生成完了: "${data.draft.title}"`);
@@ -508,7 +516,7 @@ function BlogWriter() {
   };
 
   const handlePublish = async () => {
-    if (!confirm(`"${selected.title}" を公開しますか？`)) return;
+    if (!confirm(`"${selected.title}" をVercelに公開しますか？\nGitHubにコミット → 自動デプロイされます。`)) return;
     setPublishing(true);
     try {
       const res = await fetch('/api/blog-publish', {
@@ -518,13 +526,52 @@ function BlogWriter() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
-      showNotice(`公開完了: ${data.filename}`);
+      showNotice(`✅ Vercel公開完了: ${data.filename}`);
       setSelected({ ...selected, status: 'published' });
       await loadDrafts();
     } catch (e) {
       showNotice(`公開エラー: ${e.message}`, true);
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const handleRepublish = async () => {
+    if (!confirm(`"${selected.title}" をVercelに再公開しますか？\n最新の内容・写真でGitHubを上書きします。`)) return;
+    setPublishing(true);
+    try {
+      const res = await fetch('/api/blog-publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id, force: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showNotice(`🔄 Vercel再公開完了: ${data.filename}`);
+      await loadDrafts();
+    } catch (e) {
+      showNotice(`再公開エラー: ${e.message}`, true);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const handlePublishLocal = async () => {
+    if (!confirm(`"${selected.title}" をローカルに書き出しますか？\nPremium Real Estate Website の content/blog/ に保存されます。`)) return;
+    setPublishingLocal(true);
+    try {
+      const res = await fetch('/api/blog-publish-local', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showNotice(`💾 ローカル保存完了: ${data.filename}`);
+    } catch (e) {
+      showNotice(`ローカル保存エラー: ${e.message}`, true);
+    } finally {
+      setPublishingLocal(false);
     }
   };
 
@@ -538,6 +585,26 @@ function BlogWriter() {
     setSelected(null);
     await loadDrafts();
     showNotice('却下しました');
+  };
+
+  const handleRefetchPhoto = async () => {
+    setRefetchingPhoto(true);
+    showNotice('Pexelsから写真を再取得中...');
+    try {
+      const res  = await fetch('/api/blog-refetch-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSelected(prev => ({ ...prev, featured_image: data.featured_image, photo_credit: data.photo_credit }));
+      showNotice(data.message || '写真を更新しました');
+    } catch (e) {
+      showNotice(`エラー: ${e.message}`, true);
+    } finally {
+      setRefetchingPhoto(false);
+    }
   };
 
   const handleDelete = async () => {
@@ -579,13 +646,26 @@ function BlogWriter() {
 
   return (
     <div>
-      {/* 生成ボタン + 通知 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <div style={{ fontSize: 13, color: '#888' }}>下書き {loading ? '...' : `${drafts.length}件`}</div>
-        <button onClick={handleGenerate} disabled={generating} style={bS.btn('#1a1a1a', '#fff')}>
-          {generating ? '⏳ 生成中...' : '✨ 新しい記事を生成'}
-        </button>
+      {/* テーマ入力欄 */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>テーマを指定（空欄でAIが自動選択）</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            type="text"
+            value={customTopic}
+            onChange={e => setCustomTopic(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !generating && handleGenerate()}
+            placeholder="例: How Foreigners Can Buy a House in Tokyo"
+            disabled={generating}
+            style={{ ...bS.input, marginBottom: 0, flex: 1 }}
+          />
+          <button onClick={handleGenerate} disabled={generating} style={bS.btn('#1a1a1a', '#fff')}>
+            {generating ? '⏳ 生成中...' : '✨ 生成'}
+          </button>
+        </div>
       </div>
+      {/* 下書き件数 */}
+      <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>下書き {loading ? '...' : `${drafts.length}件`}</div>
       {notice && <div style={bS.notice(notice.error)}>{notice.text}</div>}
 
       <div style={bS.wrap}>
@@ -626,13 +706,26 @@ function BlogWriter() {
                     <button onClick={() => setEditing(true)} style={bS.btn('#f1f5f9', '#334155', '1px solid #e2e8f0')}>編集</button>
                     {selected.status === 'draft' && (
                       <>
+                        <button onClick={handlePublishLocal} disabled={publishingLocal} style={bS.btn('#1d4ed8', '#fff')}>
+                          {publishingLocal ? '保存中...' : '💾 ローカルで確認'}
+                        </button>
                         <button onClick={handlePublish} disabled={publishing} style={bS.btn('#2d7a4f', '#fff')}>
-                          {publishing ? '公開中...' : '公開する'}
+                          {publishing ? '公開中...' : '🚀 Vercelに公開'}
                         </button>
                         <button onClick={handleReject} style={bS.btn('#fff', '#ef4444', '1px solid #fca5a5')}>却下</button>
                       </>
                     )}
-                    {selected.status === 'published' && <span style={{ fontSize: 12, color: '#2d7a4f', fontWeight: 600 }}>公開済み</span>}
+                    {selected.status === 'published' && (
+                      <>
+                        <span style={{ fontSize: 12, color: '#2d7a4f', fontWeight: 600 }}>✅ 公開済み</span>
+                        <button onClick={handlePublishLocal} disabled={publishingLocal} style={bS.btn('#1d4ed8', '#fff')}>
+                          {publishingLocal ? '更新中...' : '💾 ローカル再公開'}
+                        </button>
+                        <button onClick={handleRepublish} disabled={publishing} style={bS.btn('#2d7a4f', '#fff')}>
+                          {publishing ? '更新中...' : '🔄 Vercel再公開'}
+                        </button>
+                      </>
+                    )}
                     <button onClick={handleDelete} style={{ ...bS.btn('#7f1d1d', '#fff'), marginLeft: 'auto' }}>削除</button>
                   </>
                 ) : (
@@ -652,6 +745,40 @@ function BlogWriter() {
                     {selected.meta_description && <div style={bS.metaDesc}><strong>Meta:</strong> {selected.meta_description} <span style={{ color: selected.meta_description.length > 160 ? '#ef4444' : '#bbb', fontSize: 11 }}>({selected.meta_description.length}/160)</span></div>}
                     {selected.excerpt && <div style={bS.metaDesc}><strong>Excerpt:</strong> {selected.excerpt}</div>}
                     {selected.trending_topic && <span style={bS.trendBadge}>Trend: {selected.trending_topic}</span>}
+
+                    {/* 写真プレビュー */}
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 12, color: '#888' }}>アイキャッチ画像</span>
+                        <button
+                          onClick={handleRefetchPhoto}
+                          disabled={refetchingPhoto}
+                          style={{ ...bS.btn('#6366f1', '#fff'), fontSize: 11, padding: '3px 10px' }}
+                        >
+                          {refetchingPhoto ? '⏳' : '🔄 写真を再取得'}
+                        </button>
+                      </div>
+                      {selected.featured_image ? (
+                        <div>
+                          <img
+                            src={selected.featured_image}
+                            alt="featured"
+                            style={{ width: '100%', maxHeight: 180, objectFit: 'cover', borderRadius: 6, border: '1px solid #e5e5e5' }}
+                            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
+                          />
+                          <div style={{ display: 'none', padding: '12px', background: '#fef2f2', borderRadius: 6, fontSize: 12, color: '#991b1b' }}>
+                            ⚠️ 画像を読み込めませんでした。「写真を再取得」を押してください。
+                          </div>
+                          {selected.photo_credit && (
+                            <div style={{ fontSize: 11, color: '#bbb', marginTop: 3 }}>{selected.photo_credit}</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ padding: '12px', background: '#f9fafb', borderRadius: 6, fontSize: 12, color: '#888', border: '1px dashed #e5e5e5' }}>
+                          写真なし — 「🔄 写真を再取得」で追加できます
+                        </div>
+                      )}
+                    </div>
                   </>
                 ) : (
                   <div>

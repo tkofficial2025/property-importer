@@ -99,44 +99,55 @@ async function fetchJapaneseInfo(query) {
   }
 }
 
+// ClaudeでPexels検索クエリを生成
+async function generatePhotoQuery(topic) {
+  try {
+    const msg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5',
+      max_tokens: 60,
+      messages: [{
+        role: 'user',
+        content: `Generate a short Pexels photo search query (3-5 words, English) for this blog article title: "${topic}"
+The query should return a photo that visually matches the article content.
+Return ONLY the search query, nothing else. Examples: "tokyo apartment interior", "japan cherry blossom street", "modern japanese office building"`,
+      }],
+    });
+    return msg.content[0].text.trim().replace(/^["']|["']$/g, '');
+  } catch (e) {
+    console.error('[PhotoQuery] エラー:', e.message);
+    return 'tokyo japan real estate';
+  }
+}
+
 // Pexels APIで記事関連のフリー素材写真を取得
-async function fetchPhoto(topic, category) {
+async function fetchPhoto(topic) {
   const apiKey = process.env.PEXELS_API_KEY;
   if (!apiKey) {
     console.log('[Photo] PEXELS_API_KEY未設定 → スキップ');
     return null;
   }
 
-  // カテゴリ別の検索クエリ
-  const queryMap = {
-    Investment: 'tokyo skyline city',
-    Buy:        'tokyo apartment building',
-    Rent:       'japan apartment interior',
-    Market:     'tokyo real estate cityscape',
-    Area:       'tokyo neighborhood street',
-    Lifestyle:  'japan expat living',
-    Guide:      'tokyo japan',
-  };
-  const query = queryMap[category] || 'tokyo japan';
+  const query = await generatePhotoQuery(topic);
+  console.log(`[Photo] Pexels検索クエリ: "${query}"`);
 
   try {
-    const url = `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=10&orientation=landscape`;
+    const url = `https://api.pexels.com/v1/search?query=${encodeURIComponent(query)}&per_page=15&orientation=landscape`;
     const res = await fetch(url, {
       headers: { Authorization: apiKey },
       signal: AbortSignal.timeout(8000),
     });
     if (!res.ok) throw new Error(`Pexels error: ${res.status}`);
 
-    const data = await res.json();
+    const data   = await res.json();
     const photos = data.photos || [];
     if (photos.length === 0) return null;
 
-    // ランダムに1枚選択
     const photo = photos[Math.floor(Math.random() * photos.length)];
     return {
       url: photo.src.large2x || photo.src.large,
       photographer: photo.photographer,
       pexels_url: photo.url,
+      query,
     };
   } catch (e) {
     console.error('[Photo] エラー:', e.message);
@@ -163,33 +174,42 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    // 1. US・AUのトレンド取得
-    const trending = await fetchTrendingTopicEnglish();
+    const { customTopic } = req.body || {};
 
-    let topicEn, category;
+    let topicEn, category, trending = null;
 
-    if (trending) {
-      // トレンドワードをClaude経由で日本不動産向けSEOタイトルに変換
-      const refineMsg = await anthropic.messages.create({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 200,
-        messages: [{
-          role: 'user',
-          content: `A trending search in ${trending.geo} is: "${trending.trend}"
+    if (customTopic && customTopic.trim()) {
+      // ユーザー指定トピック
+      topicEn  = customTopic.trim();
+      category = detectCategory(topicEn);
+      console.log(`[Generate] ユーザー指定トピック: ${topicEn}`);
+    } else {
+      // 1. US・AUのトレンド取得
+      trending = await fetchTrendingTopicEnglish();
+
+      if (trending) {
+        // トレンドワードをClaude経由で日本不動産向けSEOタイトルに変換
+        const refineMsg = await anthropic.messages.create({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 200,
+          messages: [{
+            role: 'user',
+            content: `A trending search in ${trending.geo} is: "${trending.trend}"
 
 Convert this into a compelling English SEO blog title for a Japan real estate website targeting English-speaking expats and investors. The article must be specifically about Japan real estate. Just return the title, nothing else.`
-        }]
-      });
-      topicEn   = refineMsg.content[0].text.trim().replace(/^["']|["']$/g, '');
-      category  = detectCategory(topicEn);
-      console.log(`[Generate] トレンドから生成: ${topicEn}`);
-    } else {
-      // フォールバック：日付ベースでローテーション
-      const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
-      const fallback  = FALLBACK_TOPICS[dayOfYear % FALLBACK_TOPICS.length];
-      topicEn  = fallback.en;
-      category = fallback.category;
-      console.log(`[Generate] フォールバック: ${topicEn}`);
+          }]
+        });
+        topicEn   = refineMsg.content[0].text.trim().replace(/^["']|["']$/g, '');
+        category  = detectCategory(topicEn);
+        console.log(`[Generate] トレンドから生成: ${topicEn}`);
+      } else {
+        // フォールバック：日付ベースでローテーション
+        const dayOfYear = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
+        const fallback  = FALLBACK_TOPICS[dayOfYear % FALLBACK_TOPICS.length];
+        topicEn  = fallback.en;
+        category = fallback.category;
+        console.log(`[Generate] フォールバック: ${topicEn}`);
+      }
     }
 
     // 2. 日本語で詳細情報を収集
@@ -253,7 +273,7 @@ KEYWORDS: [5-7 English keywords US/AU users would search]`;
     const content         = fullOutput.replace(/\nEXCERPT:.*$/s, '').trim();
 
     // 5. Pexelsで写真取得
-    const photo = await fetchPhoto(topicEn, category);
+    const photo = await fetchPhoto(topicEn);
 
     // 6. Supabaseに保存
     const { data, error } = await supabase
