@@ -438,6 +438,328 @@ function DriveSync() {
   );
 }
 
+// ─── Orchestrator component ───────────────────────────────────────────────────
+function Orchestrator() {
+  const [running, setRunning]     = useState(false);
+  const [log, setLog]             = useState([]);
+  const [result, setResult]       = useState(null);
+  const [customTopic, setCustomTopic] = useState('');
+
+  const handleRun = async () => {
+    setRunning(true);
+    setLog([]);
+    setResult(null);
+    try {
+      const res  = await fetch('/api/orchestrate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customTopic }),
+      });
+      const data = await res.json();
+      setLog(data.log || []);
+      setResult(data);
+    } catch (e) {
+      setLog(prev => [...prev, `❌ エラー: ${e.message}`]);
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div>
+      {/* ヘッダー */}
+      <div style={{ background: '#fff', border: '1px solid #e8e8e4', borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
+        <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>🤖 オーケストレーター</div>
+        <div style={{ fontSize: 12, color: '#888', marginBottom: 16 }}>
+          ブログ生成 → QAチェック → メール通知 を一括実行します<br />
+          毎朝9時に自動実行されます（Windowsタスクスケジューラ）
+        </div>
+
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <input
+            value={customTopic}
+            onChange={e => setCustomTopic(e.target.value)}
+            placeholder="テーマを指定（空欄=AIが自動選択）"
+            style={{ flex: 1, padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }}
+          />
+          <button
+            onClick={handleRun}
+            disabled={running}
+            style={{ padding: '8px 20px', borderRadius: 6, border: 'none', background: '#1a1a1a', color: '#fff', fontSize: 13, fontWeight: 600, cursor: running ? 'not-allowed' : 'pointer', opacity: running ? 0.7 : 1 }}
+          >
+            {running ? '⏳ 実行中...' : '▶ 今すぐ実行'}
+          </button>
+        </div>
+      </div>
+
+      {/* 実行ログ */}
+      {log.length > 0 && (
+        <div style={{ background: '#1a1a1a', borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' }}>
+          <div style={{ fontSize: 12, color: '#888', marginBottom: 8, fontWeight: 600 }}>実行ログ</div>
+          {log.map((l, i) => (
+            <div key={i} style={{ fontSize: 12, color: l.startsWith('❌') ? '#f87171' : l.startsWith('⚠️') ? '#fbbf24' : l.startsWith('✅') ? '#4ade80' : '#e5e7eb', fontFamily: 'monospace', lineHeight: 1.8 }}>
+              {l}
+            </div>
+          ))}
+          {running && <div style={{ fontSize: 12, color: '#888', fontFamily: 'monospace', marginTop: 4 }}>⏳ 処理中...</div>}
+        </div>
+      )}
+
+      {/* 結果サマリー */}
+      {result && !running && (
+        <div style={{ background: '#fff', border: `1px solid ${result.success ? '#bbf7d0' : '#fecaca'}`, borderRadius: 12, padding: '1.25rem' }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: result.success ? '#166534' : '#991b1b', marginBottom: result.draft ? 12 : 0 }}>
+            {result.success ? '✅ 完了 — メールを送信しました' : '❌ 失敗'}
+          </div>
+          {result.draft && (
+            <div style={{ fontSize: 13, color: '#555' }}>
+              <strong>"{result.draft.title}"</strong> をブログに追加しました<br />
+              <span style={{ fontSize: 12, color: '#888' }}>QA: {result.qaStatus === 'pass' ? '✅ 通過' : '⚠️ 要確認'} — ブログタブで確認してください</span>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Bug Fixer component ──────────────────────────────────────────────────────
+const LEVEL_COLORS = { error: '#ef4444', warning: '#f59e0b', info: '#3b82f6' };
+
+function BugFixer() {
+  const [issues, setIssues]       = useState([]);
+  const [loading, setLoading]     = useState(false);
+  const [selected, setSelected]   = useState(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysis, setAnalysis]   = useState(null);
+  const [creating, setCreating]   = useState(false);
+  const [prResult, setPrResult]   = useState(null);
+  const [notice, setNotice]       = useState(null);
+
+  const showNotice = (text, error = false, url = null) => {
+    setNotice({ text, error, url });
+    if (!url) setTimeout(() => setNotice(null), 5000);
+  };
+
+  const loadIssues = async () => {
+    setLoading(true);
+    setIssues([]);
+    setSelected(null);
+    setAnalysis(null);
+    setPrResult(null);
+    try {
+      const res  = await fetch('/api/bug-list');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setIssues(data.issues || []);
+    } catch (e) {
+      showNotice(`エラー取得失敗: ${e.message}`, true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAnalyze = async (issue) => {
+    setSelected(issue);
+    setAnalysis(null);
+    setPrResult(null);
+    setAnalyzing(true);
+    try {
+      const res  = await fetch('/api/bug-analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issueId: issue.id, issueTitle: issue.title, culprit: issue.culprit }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setAnalysis(data.analysis);
+      showNotice('✅ 修正案を作成しました');
+    } catch (e) {
+      showNotice(`分析エラー: ${e.message}`, true);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const handleCreatePR = async () => {
+    if (!confirm(`GitHub PRを作成しますか？\n"${analysis.pr_title}"`)) return;
+    setCreating(true);
+    try {
+      const res  = await fetch('/api/bug-create-pr', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issueId: selected.id, analysis }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setPrResult(data);
+      showNotice(data.message, !data.auto_applied, data.pr_url);
+    } catch (e) {
+      showNotice(`PR作成エラー: ${e.message}`, true);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const bF = {
+    card:     { background: '#fff', border: '1px solid #e8e8e4', borderRadius: 12, padding: '1.25rem', marginBottom: '1rem' },
+    issue:    { padding: '10px 14px', border: '1px solid #e8e8e4', borderRadius: 8, marginBottom: 8, cursor: 'pointer', background: '#fff', transition: 'box-shadow 0.15s' },
+    issueAct: { padding: '10px 14px', border: '1px solid #6366f1', borderRadius: 8, marginBottom: 8, background: '#f5f3ff', cursor: 'pointer' },
+    btn:      (bg, color, border) => ({ padding: '7px 16px', borderRadius: 6, border: border || 'none', background: bg, color, fontSize: 13, fontWeight: 500, cursor: 'pointer' }),
+    badge:    (level) => ({ background: level === 'error' ? '#fef2f2' : level === 'warning' ? '#fffbeb' : '#eff6ff', color: LEVEL_COLORS[level] || '#555', border: `1px solid ${level === 'error' ? '#fecaca' : level === 'warning' ? '#fde68a' : '#bfdbfe'}`, borderRadius: 4, padding: '1px 7px', fontSize: 11, fontWeight: 700 }),
+  };
+
+  return (
+    <div>
+      {notice && (
+        <div style={{ padding: '12px 16px', borderRadius: 8, marginBottom: 12, background: notice.error ? '#fef2f2' : '#f0fdf4', color: notice.error ? '#991b1b' : '#166534', border: `1px solid ${notice.error ? '#fecaca' : '#bbf7d0'}`, fontSize: 13 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{notice.text}</span>
+            <button onClick={() => setNotice(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#999', fontSize: 16, lineHeight: 1 }}>✕</button>
+          </div>
+          {notice.url && (
+            <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8, background: '#fff', border: '1px solid #bbf7d0', borderRadius: 6, padding: '7px 12px' }}>
+              <span style={{ fontSize: 12, color: '#2563eb', flex: 1, wordBreak: 'break-all' }}>{notice.url}</span>
+              <button
+                onClick={() => { navigator.clipboard.writeText(notice.url); }}
+                style={{ flexShrink: 0, padding: '4px 10px', borderRadius: 4, border: '1px solid #d1fae5', background: '#f0fdf4', fontSize: 11, cursor: 'pointer', color: '#166534', fontWeight: 600 }}
+              >
+                📋 URLをコピー
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ヘッダー */}
+      <div style={{ ...bF.card, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 600 }}>🐛 バグフィクサー</div>
+          <div style={{ fontSize: 12, color: '#888', marginTop: 3 }}>Sentryのエラーを取得 → Claudeが修正案を作成 → GitHub PRを自動作成</div>
+        </div>
+        <button onClick={loadIssues} disabled={loading} style={bF.btn('#1a1a1a', '#fff')}>
+          {loading ? '⏳ 取得中...' : '🔄 エラーを取得'}
+        </button>
+      </div>
+
+      {/* エラー一覧 */}
+      {issues.length > 0 && (
+        <div style={bF.card}>
+          <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 12 }}>未解決のエラー ({issues.length}件)</div>
+          {issues.map(issue => (
+            <div
+              key={issue.id}
+              onClick={() => handleAnalyze(issue)}
+              style={selected?.id === issue.id ? bF.issueAct : bF.issue}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                    <span style={bF.badge(issue.level)}>{issue.level}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: '#1a1a1a' }}>{issue.title}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: '#888' }}>{issue.culprit}</div>
+                </div>
+                <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: '#ef4444' }}>{Number(issue.count).toLocaleString()}回</div>
+                  <div style={{ fontSize: 11, color: '#bbb' }}>{new Date(issue.lastSeen).toLocaleDateString('ja-JP')}</div>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {issues.length === 0 && !loading && (
+        <div style={{ ...bF.card, textAlign: 'center', color: '#888', padding: '2rem' }}>
+          「エラーを取得」を押してSentryのエラー一覧を表示します
+        </div>
+      )}
+
+      {/* 分析中 */}
+      {analyzing && (
+        <div style={{ ...bF.card, textAlign: 'center', color: '#6366f1', padding: '2rem' }}>
+          ⏳ Claudeがコードを読んで修正案を作成中...
+        </div>
+      )}
+
+      {/* 修正案 */}
+      {analysis && selected && (
+        <div style={bF.card}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>🔧 修正案</div>
+              <div style={{ fontSize: 12, color: '#888' }}>{selected.title}</div>
+            </div>
+            <span style={{ fontSize: 12, background: analysis.confidence === 'high' ? '#f0fdf4' : analysis.confidence === 'medium' ? '#fffbeb' : '#fef2f2', color: analysis.confidence === 'high' ? '#166534' : analysis.confidence === 'medium' ? '#92400e' : '#991b1b', border: '1px solid currentColor', borderRadius: 4, padding: '2px 8px' }}>
+              信頼度: {analysis.confidence}
+            </span>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 4 }}>原因</div>
+            <div style={{ fontSize: 13, color: '#1a1a1a', background: '#f8f7f4', borderRadius: 6, padding: '8px 12px' }}>{analysis.root_cause}</div>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 4 }}>修正内容</div>
+            <div style={{ fontSize: 13, color: '#1a1a1a', background: '#f8f7f4', borderRadius: 6, padding: '8px 12px' }}>{analysis.fix_summary}</div>
+          </div>
+
+          {analysis.files?.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: '#555', marginBottom: 6 }}>変更ファイル</div>
+              {analysis.files.map((f, i) => (
+                <div key={i} style={{ marginBottom: 10, border: '1px solid #e5e5e5', borderRadius: 6, overflow: 'hidden' }}>
+                  <div style={{ background: '#f1f5f9', padding: '6px 12px', fontSize: 12, fontWeight: 600, color: '#334155' }}>
+                    📄 {f.path}
+                  </div>
+                  <div style={{ padding: '8px 12px', fontSize: 12, color: '#555' }}>{f.description}</div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 0 }}>
+                    <div style={{ padding: '8px 12px', background: '#fef2f2', borderTop: '1px solid #fecaca' }}>
+                      <div style={{ fontSize: 11, color: '#991b1b', fontWeight: 600, marginBottom: 4 }}>修正前</div>
+                      <pre style={{ fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap', color: '#7f1d1d' }}>{f.old_code}</pre>
+                    </div>
+                    <div style={{ padding: '8px 12px', background: '#f0fdf4', borderTop: '1px solid #bbf7d0', borderLeft: '1px solid #bbf7d0' }}>
+                      <div style={{ fontSize: 11, color: '#166534', fontWeight: 600, marginBottom: 4 }}>修正後</div>
+                      <pre style={{ fontSize: 11, margin: 0, overflowX: 'auto', whiteSpace: 'pre-wrap', color: '#14532d' }}>{f.new_code}</pre>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {prResult ? (
+            <div style={{ padding: '14px 16px', borderRadius: 6, background: '#f0fdf4', border: '1px solid #bbf7d0' }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: '#166534', marginBottom: 10 }}>🎉 PR #{prResult.pr_number} を作成しました</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, background: '#fff', border: '1px solid #bbf7d0', borderRadius: 6, padding: '8px 12px', marginBottom: 8 }}>
+                <span style={{ fontSize: 12, color: '#2563eb', flex: 1, wordBreak: 'break-all' }}>{prResult.pr_url}</span>
+                <button
+                  onClick={() => { navigator.clipboard.writeText(prResult.pr_url); showNotice('URLをコピーしました'); }}
+                  style={{ flexShrink: 0, padding: '4px 10px', borderRadius: 4, border: '1px solid #d1fae5', background: '#fff', fontSize: 11, cursor: 'pointer', color: '#166534' }}
+                >
+                  📋 コピー
+                </button>
+              </div>
+              <div style={{ fontSize: 12, color: '#555' }}>変更ファイル: {prResult.updated_files?.join(', ')}</div>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={handleCreatePR} disabled={creating} style={bF.btn('#2d7a4f', '#fff')}>
+                {creating ? '⏳ PR作成中...' : '🚀 GitHub PRを作成'}
+              </button>
+              <button onClick={() => { setAnalysis(null); setPrResult(null); }} style={bF.btn('#f1f5f9', '#334155', '1px solid #e2e8f0')}>
+                キャンセル
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Blog Writer component ────────────────────────────────────────────────────
 const BLOG_CATEGORIES = ['Guide', 'Rent', 'Buy', 'Investment', 'Area', 'Market', 'Lifestyle', 'Tech'];
 const BLOG_STATUS_COLORS = { draft: '#f59e0b', published: '#10b981', rejected: '#ef4444' };
@@ -453,6 +775,8 @@ function BlogWriter() {
   const [publishing, setPublishing] = useState(false);
   const [publishingLocal, setPublishingLocal] = useState(false);
   const [refetchingPhoto, setRefetchingPhoto] = useState(false);
+  const [qaChecking, setQaChecking] = useState(false);
+  const [qaResult, setQaResult]   = useState(null);
   const [notice, setNotice]       = useState(null);
 
   const showNotice = (text, error = false) => {
@@ -553,6 +877,26 @@ function BlogWriter() {
       showNotice(`再公開エラー: ${e.message}`, true);
     } finally {
       setPublishing(false);
+    }
+  };
+
+  const handleQA = async () => {
+    setQaChecking(true);
+    setQaResult(null);
+    try {
+      const res = await fetch('/api/blog-qa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setQaResult(data);
+      showNotice(data.overall === 'pass' ? '✅ QAチェック完了: 問題なし' : '⚠️ QAチェック完了: 修正が必要な項目があります');
+    } catch (e) {
+      showNotice(`QAエラー: ${e.message}`, true);
+    } finally {
+      setQaChecking(false);
     }
   };
 
@@ -704,6 +1048,9 @@ function BlogWriter() {
                 {!editing ? (
                   <>
                     <button onClick={() => setEditing(true)} style={bS.btn('#f1f5f9', '#334155', '1px solid #e2e8f0')}>編集</button>
+                    <button onClick={handleQA} disabled={qaChecking} style={bS.btn('#7c3aed', '#fff')}>
+                      {qaChecking ? '⏳ チェック中...' : '🔍 QAチェック'}
+                    </button>
                     {selected.status === 'draft' && (
                       <>
                         <button onClick={handlePublishLocal} disabled={publishingLocal} style={bS.btn('#1d4ed8', '#fff')}>
@@ -796,6 +1143,36 @@ function BlogWriter() {
                 )}
               </div>
 
+              {/* QA結果パネル */}
+              {qaResult && (
+                <div style={{ margin: '0 0 12px', padding: '14px 16px', borderRadius: 8, border: `1px solid ${qaResult.overall === 'pass' ? '#bbf7d0' : '#fecaca'}`, background: qaResult.overall === 'pass' ? '#f0fdf4' : '#fff7f7' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <strong style={{ fontSize: 13, color: qaResult.overall === 'pass' ? '#166534' : '#991b1b' }}>
+                      {qaResult.overall === 'pass' ? '✅ QA通過' : '⚠️ QA要修正'}
+                    </strong>
+                    <button onClick={() => setQaResult(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#999', fontSize: 16 }}>✕</button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', marginBottom: 10 }}>
+                    {qaResult.checks?.map(c => (
+                      <div key={c.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12 }}>
+                        <span style={{ flexShrink: 0, marginTop: 1 }}>
+                          {c.status === 'pass' ? '✅' : c.status === 'warn' ? '⚠️' : '❌'}
+                        </span>
+                        <div>
+                          <span style={{ fontWeight: 600, color: '#333' }}>{c.label}: </span>
+                          <span style={{ color: '#555' }}>{c.message}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  {qaResult.summary && (
+                    <div style={{ fontSize: 12, color: '#555', borderTop: '1px solid #e5e5e5', paddingTop: 8 }}>
+                      <strong>Summary:</strong> {qaResult.summary}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* 本文 */}
               <div style={bS.body}>
                 {editing ? (
@@ -864,7 +1241,7 @@ export default function Home() {
         });
         const json = await res.json();
         if (!res.ok) throw new Error(json.error || res.status);
-        parsed.push({ filename: f.name, data: json.data, error: null });
+        parsed.push({ filename: f.name, data: json.data, warnings: json.warnings || [], error: null });
       } catch (e) {
         parsed.push({ filename: f.name, data: null, error: e.message });
       }
@@ -960,6 +1337,8 @@ export default function Home() {
               ["import",     "PDFインポート"],
               ["drive-sync", "画像同期"],
               ["blog",       "ブログ"],
+              ["orchestrate","🤖 自動化"],
+              ["bugs",       "🐛 バグ"],
               ["history",    "履歴"],
             ].map(([id, label]) => (
               <button key={id} onClick={() => setTab(id)} style={{
@@ -1037,7 +1416,28 @@ export default function Home() {
 
                 {results.map((r, ri) => (
                   <div key={ri} style={{ marginTop: 16 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: "#555", marginBottom: 8 }}>📄 {r.filename}</div>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#555", marginBottom: 8 }}>
+                      📄 {r.filename}
+                      {r.warnings?.some(w => w.level === 'error') && (
+                        <span style={{ marginLeft: 8, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 4, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>
+                          ❌ 要確認 {r.warnings.filter(w => w.level === 'error').length}件
+                        </span>
+                      )}
+                      {r.warnings?.some(w => w.level === 'warn') && !r.warnings?.some(w => w.level === 'error') && (
+                        <span style={{ marginLeft: 8, background: '#fffbeb', color: '#92400e', border: '1px solid #fde68a', borderRadius: 4, padding: '1px 7px', fontSize: 11, fontWeight: 700 }}>
+                          ⚠️ 警告 {r.warnings.filter(w => w.level === 'warn').length}件
+                        </span>
+                      )}
+                    </div>
+                    {r.warnings?.length > 0 && (
+                      <div style={{ marginBottom: 10, padding: '8px 12px', borderRadius: 6, background: r.warnings.some(w => w.level === 'error') ? '#fef2f2' : '#fffbeb', border: `1px solid ${r.warnings.some(w => w.level === 'error') ? '#fecaca' : '#fde68a'}` }}>
+                        {r.warnings.map((w, wi) => (
+                          <div key={wi} style={{ fontSize: 12, color: w.level === 'error' ? '#991b1b' : '#92400e', marginBottom: wi < r.warnings.length - 1 ? 3 : 0 }}>
+                            {w.level === 'error' ? '❌' : '⚠️'} <strong>{w.field}:</strong> {w.message}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                     {r.error ? (
                       <div style={errStyle}>❌ {r.error}</div>
                     ) : (
@@ -1122,6 +1522,20 @@ export default function Home() {
                 <p style={{ fontSize: 13, color: "#888", margin: 0 }}>AI が Google Trends + 日本語検索をもとに英語記事を自動生成します。レビュー後に公開してください。</p>
               </div>
               <BlogWriter />
+            </div>
+          )}
+
+          {/* Orchestrator tab */}
+          {tab === "orchestrate" && (
+            <div style={{ maxWidth: 860 }}>
+              <Orchestrator />
+            </div>
+          )}
+
+          {/* Bug Fixer tab */}
+          {tab === "bugs" && (
+            <div style={{ maxWidth: 860 }}>
+              <BugFixer />
             </div>
           )}
 

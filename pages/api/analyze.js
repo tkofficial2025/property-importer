@@ -120,11 +120,49 @@ export default async function handler(req, res) {
         }
       } catch (e) {
         console.error("Geocoding error:", e);
-        // エラーが発生しても続行
       }
     }
 
-    return res.status(200).json({ data: parsed });
+    // ── 物件データQAチェック ──────────────────────────────
+    const warnings = [];
+
+    // 必須項目チェック
+    if (!parsed.title)           warnings.push({ level: 'error',   field: 'title',            message: '物件名が取得できませんでした' });
+    if (!parsed.address)         warnings.push({ level: 'error',   field: 'address',          message: '住所が取得できませんでした' });
+    if (!parsed.price)           warnings.push({ level: 'error',   field: 'price',            message: '賃料が取得できませんでした' });
+    if (!parsed.layout)          warnings.push({ level: 'warn',    field: 'layout',           message: '間取り（1LDKなど）が取得できませんでした' });
+    if (!parsed.station)         warnings.push({ level: 'warn',    field: 'station',          message: '最寄り駅が取得できませんでした' });
+    if (!parsed.size)            warnings.push({ level: 'warn',    field: 'size',             message: '専有面積が取得できませんでした' });
+
+    // 価格の異常値チェック
+    if (parsed.price) {
+      if (parsed.type === 'rent' && parsed.price < 10000)
+        warnings.push({ level: 'error', field: 'price', message: `賃料が異常に低い: ¥${parsed.price.toLocaleString()}（要確認）` });
+      if (parsed.type === 'rent' && parsed.price > 5000000)
+        warnings.push({ level: 'warn',  field: 'price', message: `賃料が異常に高い: ¥${parsed.price.toLocaleString()}（要確認）` });
+    }
+
+    // 面積の異常値チェック
+    if (parsed.size) {
+      if (parsed.size < 6)
+        warnings.push({ level: 'error', field: 'size', message: `面積が異常に小さい: ${parsed.size}㎡（要確認）` });
+      if (parsed.size > 1000)
+        warnings.push({ level: 'warn',  field: 'size', message: `面積が異常に大きい: ${parsed.size}㎡（要確認）` });
+    }
+
+    // 徒歩分数チェック
+    if (parsed.walking_minutes && parsed.walking_minutes > 60)
+      warnings.push({ level: 'warn', field: 'walking_minutes', message: `徒歩${parsed.walking_minutes}分は異常に遠い（要確認）` });
+
+    // 外国人対応チェック
+    if (parsed.foreign_friendly === null || parsed.foreign_friendly === undefined)
+      warnings.push({ level: 'warn', field: 'foreign_friendly', message: '外国人可否が不明（PDFに記載がない可能性）' });
+
+    // 緯度経度チェック
+    if (!parsed.latitude || !parsed.longitude)
+      warnings.push({ level: 'warn', field: 'address', message: '住所から緯度経度を取得できませんでした（地図に表示されません）' });
+
+    return res.status(200).json({ data: parsed, warnings });
   } catch (e) {
     console.error(e);
     return res.status(500).json({ error: e.message });
