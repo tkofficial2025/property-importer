@@ -155,12 +155,8 @@ function DriveSync() {
       const dbRows = await res.json();
       const map = {};
       dbRows.forEach((r) => {
-        const hasImage =
-          (r[DRIVE_ENV.imageCol] && r[DRIVE_ENV.imageCol] !== null && r[DRIVE_ENV.imageCol] !== "") ||
-          (r.images && Array.isArray(r.images) && r.images.length > 0);
-        if (!hasImage) {
-          map[r[DRIVE_ENV.titleCol]] = { id: r.id };
-        }
+        // 既存画像の有無に関係なく、タイトル一致なら常に更新対象にする
+        map[r[DRIVE_ENV.titleCol]] = { id: r.id };
       });
       rows.forEach((r) => {
         const match = map[r.folderName];
@@ -194,8 +190,11 @@ function DriveSync() {
       try {
         const imageUrl   = r.urls[0] || null;
         const imagesUrls = r.urls.slice(1);
-        const updateData = { [DRIVE_ENV.imageCol]: imageUrl };
-        if (imagesUrls.length > 0) updateData.images = imagesUrls;
+        const updateData = {
+          [DRIVE_ENV.imageCol]: imageUrl,
+          // sub画像が0件でも空配列で上書きし、古い残存データを防ぐ
+          images: imagesUrls,
+        };
 
         const res = await fetch(`${DRIVE_ENV.supaUrl}/rest/v1/${DRIVE_ENV.tableName}?id=eq.${r.rowId}`, {
           method: "PATCH",
@@ -319,7 +318,7 @@ function DriveSync() {
             )}
           </div>
           <p style={{ fontSize: 12, color: "#888", margin: 0 }}>
-            このフォルダ直下のサブフォルダ名 = 物件名として照合します（画像未設定の物件のみ対象）
+            このフォルダ直下のサブフォルダ名 = 物件名として照合します（一致した物件は画像を上書き更新）
           </p>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, fontSize: 13, color: "#888", padding: "8px 12px", background: "#f8f7f4", borderRadius: 8, border: "1px solid #e8e8e4" }}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "#fff", border: "1px solid #e5e5e5", borderRadius: 99, padding: "2px 10px", fontSize: 12 }}>
