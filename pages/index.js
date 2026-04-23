@@ -1192,6 +1192,415 @@ function BlogWriter() {
 }
 
 // ─── Main page ────────────────────────────────────────────────────────────────
+// ─── JP Blog categories ───────────────────────────────────────────────────────
+const JP_BLOG_CATEGORIES = ['RED', '抖音', 'WeChat', 'KOL', '越境EC', 'インバウンド', '戦略'];
+
+function JpBlogWriter() {
+  const [drafts, setDrafts]           = useState([]);
+  const [selected, setSelected]       = useState(null);
+  const [editing, setEditing]         = useState(false);
+  const [editData, setEditData]       = useState({});
+  const [loading, setLoading]         = useState(false);
+  const [generating, setGenerating]   = useState(false);
+  const [customTopic, setCustomTopic] = useState('');
+  const [publishing, setPublishing]   = useState(false);
+  const [refetchingPhoto, setRefetchingPhoto] = useState(false);
+  const [qaChecking, setQaChecking]   = useState(false);
+  const [qaResult, setQaResult]       = useState(null);
+  const [notice, setNotice]           = useState(null);
+
+  const showNotice = (text, error = false) => {
+    setNotice({ text, error });
+    setTimeout(() => setNotice(null), 4000);
+  };
+
+  const loadDrafts = useCallback(async () => {
+    setLoading(true);
+    const res = await fetch('/api/jp-blog-drafts');
+    const data = await res.json();
+    setDrafts(Array.isArray(data) ? data : []);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadDrafts(); }, [loadDrafts]);
+
+  const selectDraft = async (id) => {
+    const res = await fetch(`/api/jp-blog-drafts?id=${id}`);
+    const data = await res.json();
+    setSelected(data);
+    setEditing(false);
+    setEditData({ title: data.title, content: data.content, excerpt: data.excerpt, category: data.category });
+    setQaResult(null);
+  };
+
+  const handleGenerate = async () => {
+    const topicLabel = customTopic.trim() ? `「${customTopic.trim()}」` : 'AIが自動選択';
+    if (!confirm(`新しい記事を生成しますか？\nテーマ: ${topicLabel}\n（30〜60秒かかります）`)) return;
+    setGenerating(true);
+    showNotice(customTopic.trim() ? `「${customTopic.trim()}」で記事を生成中...` : '記事を生成中... Google Trends → Claude API');
+    try {
+      const res = await fetch('/api/jp-blog-generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customTopic: customTopic.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showNotice(`生成完了: "${data.draft.title}"`);
+      await loadDrafts();
+      selectDraft(data.draft.id);
+    } catch (e) {
+      showNotice(`エラー: ${e.message}`, true);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    const res = await fetch('/api/jp-blog-drafts', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: selected.id, ...editData }),
+    });
+    const data = await res.json();
+    if (!res.ok) { showNotice(`保存エラー: ${data.error}`, true); return; }
+    setSelected(data);
+    setEditing(false);
+    await loadDrafts();
+    showNotice('保存しました');
+  };
+
+  const handlePublish = async () => {
+    if (!confirm(`"${selected.title}" をTKSNSサイトに公開しますか？\n公開するとサイトに即時反映されます。`)) return;
+    setPublishing(true);
+    try {
+      const res = await fetch('/api/jp-blog-publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showNotice(`✅ 公開完了: TKSNSサイトに即時反映されます`);
+      setSelected({ ...selected, status: 'published' });
+      await loadDrafts();
+    } catch (e) {
+      showNotice(`公開エラー: ${e.message}`, true);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const handleUnpublish = async () => {
+    if (!confirm(`"${selected.title}" を下書きに戻しますか？\nTKSNSサイトから非表示になります。`)) return;
+    setPublishing(true);
+    try {
+      const res = await fetch('/api/jp-blog-publish', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id, unpublish: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      showNotice('下書きに戻しました');
+      setSelected({ ...selected, status: 'draft' });
+      await loadDrafts();
+    } catch (e) {
+      showNotice(`エラー: ${e.message}`, true);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const handleQA = async () => {
+    setQaChecking(true);
+    setQaResult(null);
+    try {
+      const res = await fetch('/api/jp-blog-qa', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setQaResult(data);
+      showNotice(data.overall === 'pass' ? '✅ QAチェック完了: 問題なし' : '⚠️ QAチェック完了: 修正が必要な項目があります');
+    } catch (e) {
+      showNotice(`QAエラー: ${e.message}`, true);
+    } finally {
+      setQaChecking(false);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!confirm('この下書きを却下しますか？')) return;
+    await fetch('/api/jp-blog-drafts', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: selected.id, status: 'rejected' }),
+    });
+    setSelected(null);
+    await loadDrafts();
+    showNotice('却下しました');
+  };
+
+  const handleRefetchPhoto = async () => {
+    setRefetchingPhoto(true);
+    showNotice('Pexelsから写真を再取得中...');
+    try {
+      const res = await fetch('/api/jp-blog-refetch-photo', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: selected.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSelected(prev => ({ ...prev, featured_image: data.featured_image, photo_credit: data.photo_credit }));
+      showNotice(data.message || '写真を更新しました');
+    } catch (e) {
+      showNotice(`エラー: ${e.message}`, true);
+    } finally {
+      setRefetchingPhoto(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!confirm(`"${selected.title}" を完全に削除しますか？\nこの操作は元に戻せません。`)) return;
+    const res = await fetch(`/api/jp-blog-drafts?id=${selected.id}`, { method: 'DELETE' });
+    if (!res.ok) { showNotice('削除に失敗しました', true); return; }
+    setSelected(null);
+    await loadDrafts();
+    showNotice('削除しました');
+  };
+
+  const bS = {
+    wrap:       { display: 'flex', gap: 16, height: 'calc(100vh - 220px)', minHeight: 500 },
+    sidebar:    { width: 280, border: '1px solid #e5e5e5', borderRadius: 10, background: '#fff', overflowY: 'auto', flexShrink: 0, display: 'flex', flexDirection: 'column' },
+    sHead:      { padding: '10px 14px', fontSize: 11, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', borderBottom: '1px solid #f0f0f0', background: '#fafafa', borderRadius: '10px 10px 0 0' },
+    item:       { padding: '12px 14px', borderBottom: '1px solid #f5f5f5', cursor: 'pointer' },
+    itemActive: { background: '#f0f7ff', borderLeft: '3px solid #1a1a1a' },
+    iTitle:     { fontSize: 12, fontWeight: 500, color: '#1a1a1a', lineHeight: 1.4, marginBottom: 5 },
+    iMeta:      { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+    badge:      (s) => ({ fontSize: 10, padding: '2px 7px', borderRadius: 999, fontWeight: 600, background: BLOG_STATUS_COLORS[s] + '22', color: BLOG_STATUS_COLORS[s], border: `1px solid ${BLOG_STATUS_COLORS[s]}44` }),
+    iCat:       { fontSize: 10, color: '#888' },
+    iDate:      { fontSize: 10, color: '#bbb', marginLeft: 'auto' },
+    main:       { flex: 1, border: '1px solid #e5e5e5', borderRadius: 10, background: '#fff', overflowY: 'auto', display: 'flex', flexDirection: 'column' },
+    actions:    { display: 'flex', alignItems: 'center', gap: 8, padding: '12px 16px', borderBottom: '1px solid #f0f0f0', background: '#fafafa', borderRadius: '10px 10px 0 0', flexShrink: 0, flexWrap: 'wrap' },
+    metaBox:    { padding: '16px 18px', borderBottom: '1px solid #f5f5f5', flexShrink: 0 },
+    artTitle:   { margin: '0 0 10px', fontSize: 17, fontWeight: 600, color: '#1a1a1a', lineHeight: 1.4 },
+    metaRow:    { fontSize: 12, color: '#888', marginBottom: 6 },
+    metaDesc:   { fontSize: 12, color: '#555', marginTop: 5, lineHeight: 1.5 },
+    trendBadge: { display: 'inline-block', marginTop: 6, padding: '2px 9px', background: '#fffbeb', color: '#92400e', borderRadius: 999, fontSize: 11, border: '1px solid #fde68a' },
+    code:       { background: '#f5f5f5', padding: '1px 5px', borderRadius: 4, fontFamily: 'monospace', fontSize: 11 },
+    body:       { flex: 1, padding: '16px 18px', overflowY: 'auto' },
+    pre:        { whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 12, color: '#374151', lineHeight: 1.7, background: '#f8f7f4', padding: '16px', borderRadius: 8 },
+    label:      { display: 'block', fontSize: 11, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: 4 },
+    input:      { width: '100%', padding: '7px 9px', border: '1px solid #e5e5e5', borderRadius: 6, fontSize: 13, fontFamily: 'inherit', resize: 'vertical', boxSizing: 'border-box', marginBottom: 10 },
+    btn:        (bg, color, border) => ({ padding: '7px 14px', background: bg, color, border: border || 'none', borderRadius: 6, fontSize: 12, fontWeight: 500, cursor: 'pointer' }),
+    empty:      { flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#bbb', fontSize: 13 },
+    notice:     (err) => ({ marginBottom: 12, padding: '10px 14px', borderRadius: 8, fontSize: 13, border: '1px solid', background: err ? '#fef2f2' : '#f0fdf4', borderColor: err ? '#fca5a5' : '#86efac', color: err ? '#991b1b' : '#166534' }),
+  };
+
+  return (
+    <div>
+      {/* テーマ入力 */}
+      <div style={{ marginBottom: 10 }}>
+        <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>テーマを指定（空欄でAIが自動選択）</div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            type="text"
+            value={customTopic}
+            onChange={e => setCustomTopic(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !generating && handleGenerate()}
+            placeholder="例: 小红書で日本コスメブランドを売る方法"
+            disabled={generating}
+            style={{ ...bS.input, marginBottom: 0, flex: 1 }}
+          />
+          <button onClick={handleGenerate} disabled={generating} style={bS.btn('#1a1a1a', '#fff')}>
+            {generating ? '⏳ 生成中...' : '✨ 生成'}
+          </button>
+        </div>
+      </div>
+      <div style={{ fontSize: 13, color: '#888', marginBottom: 8 }}>下書き {loading ? '...' : `${drafts.length}件`}</div>
+      {notice && <div style={bS.notice(notice.error)}>{notice.text}</div>}
+
+      <div style={bS.wrap}>
+        {/* サイドバー */}
+        <div style={bS.sidebar}>
+          <div style={bS.sHead}>下書き一覧</div>
+          {drafts.length === 0 && !loading && (
+            <div style={{ padding: '20px 14px', fontSize: 12, color: '#bbb', textAlign: 'center', lineHeight: 1.8 }}>
+              下書きがありません<br />「生成」ボタンで記事を作成してください
+            </div>
+          )}
+          {drafts.map(d => (
+            <div
+              key={d.id}
+              onClick={() => selectDraft(d.id)}
+              style={{ ...bS.item, ...(selected?.id === d.id ? bS.itemActive : {}) }}
+            >
+              <div style={bS.iTitle}>{d.title}</div>
+              <div style={bS.iMeta}>
+                <span style={bS.badge(d.status)}>{d.status === 'draft' ? '下書き' : d.status === 'published' ? '公開済' : '却下'}</span>
+                <span style={bS.iCat}>{d.category}</span>
+                {d.qa_status && (
+                  <span style={{ fontSize: 10, color: d.qa_status === 'pass' ? '#166534' : '#991b1b' }}>
+                    {d.qa_status === 'pass' ? '✅QA' : '⚠️QA'}
+                  </span>
+                )}
+                <span style={bS.iDate}>{new Date(d.created_at).toLocaleDateString('ja-JP')}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {/* メインパネル */}
+        <div style={bS.main}>
+          {!selected ? (
+            <div style={bS.empty}>左の一覧から記事を選択してください</div>
+          ) : (
+            <>
+              {/* アクションバー */}
+              <div style={bS.actions}>
+                {!editing ? (
+                  <>
+                    <button onClick={() => setEditing(true)} style={bS.btn('#f1f5f9', '#334155', '1px solid #e2e8f0')}>編集</button>
+                    <button onClick={handleQA} disabled={qaChecking} style={bS.btn('#7c3aed', '#fff')}>
+                      {qaChecking ? '⏳ チェック中...' : '🔍 QAチェック'}
+                    </button>
+                    {selected.status === 'draft' && (
+                      <>
+                        <button onClick={handlePublish} disabled={publishing} style={bS.btn('#2d7a4f', '#fff')}>
+                          {publishing ? '処理中...' : '🚀 TKSNSに公開'}
+                        </button>
+                        <button onClick={handleReject} style={bS.btn('#fff', '#ef4444', '1px solid #fca5a5')}>却下</button>
+                      </>
+                    )}
+                    {selected.status === 'published' && (
+                      <>
+                        <span style={{ fontSize: 12, color: '#2d7a4f', fontWeight: 600 }}>✅ 公開済み（サイト反映中）</span>
+                        <button onClick={handleUnpublish} disabled={publishing} style={bS.btn('#92400e', '#fff')}>
+                          {publishing ? '処理中...' : '↩️ 下書きに戻す'}
+                        </button>
+                      </>
+                    )}
+                    <button onClick={handleDelete} style={{ ...bS.btn('#7f1d1d', '#fff'), marginLeft: 'auto' }}>削除</button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={handleSaveEdit} style={bS.btn('#2d7a4f', '#fff')}>保存</button>
+                    <button onClick={() => setEditing(false)} style={bS.btn('#f1f5f9', '#334155', '1px solid #e2e8f0')}>キャンセル</button>
+                  </>
+                )}
+              </div>
+
+              {/* メタ情報 */}
+              <div style={bS.metaBox}>
+                {!editing ? (
+                  <>
+                    <h2 style={bS.artTitle}>{selected.title}</h2>
+                    <div style={bS.metaRow}>カテゴリ: <strong>{selected.category}</strong> &nbsp;|&nbsp; スラッグ: <code style={bS.code}>{selected.slug}</code></div>
+                    {selected.excerpt && <div style={bS.metaDesc}><strong>要約:</strong> {selected.excerpt}</div>}
+                    {selected.trending_topic && <span style={bS.trendBadge}>Trend: {selected.trending_topic}</span>}
+                    {selected.keywords?.length > 0 && (
+                      <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                        {selected.keywords.map(k => (
+                          <span key={k} style={{ fontSize: 10, padding: '2px 7px', borderRadius: 999, background: '#f0f0f0', color: '#555' }}>{k}</span>
+                        ))}
+                      </div>
+                    )}
+                    {/* 写真プレビュー */}
+                    <div style={{ marginTop: 12 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                        <span style={{ fontSize: 12, color: '#888' }}>アイキャッチ画像</span>
+                        <button
+                          onClick={handleRefetchPhoto}
+                          disabled={refetchingPhoto}
+                          style={{ ...bS.btn('#6366f1', '#fff'), fontSize: 11, padding: '3px 10px' }}
+                        >
+                          {refetchingPhoto ? '⏳' : '🔄 写真を再取得'}
+                        </button>
+                      </div>
+                      {selected.featured_image ? (
+                        <div>
+                          <img
+                            src={selected.featured_image}
+                            alt="featured"
+                            style={{ width: '100%', maxHeight: 180, objectFit: 'cover', borderRadius: 6, border: '1px solid #e5e5e5' }}
+                            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'block'; }}
+                          />
+                          <div style={{ display: 'none', padding: '12px', background: '#fef2f2', borderRadius: 6, fontSize: 12, color: '#991b1b' }}>
+                            ⚠️ 画像を読み込めませんでした
+                          </div>
+                          {selected.photo_credit && (
+                            <div style={{ fontSize: 11, color: '#bbb', marginTop: 3 }}>{selected.photo_credit}</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ padding: '12px', background: '#f9fafb', borderRadius: 6, fontSize: 12, color: '#888', border: '1px dashed #e5e5e5' }}>
+                          写真なし — 「🔄 写真を再取得」で追加できます
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div>
+                    <label style={bS.label}>タイトル</label>
+                    <input value={editData.title} onChange={e => setEditData({ ...editData, title: e.target.value })} style={bS.input} />
+                    <label style={bS.label}>カテゴリ</label>
+                    <select value={editData.category} onChange={e => setEditData({ ...editData, category: e.target.value })} style={bS.input}>
+                      {JP_BLOG_CATEGORIES.map(c => <option key={c}>{c}</option>)}
+                    </select>
+                    <label style={bS.label}>要約</label>
+                    <textarea value={editData.excerpt || ''} onChange={e => setEditData({ ...editData, excerpt: e.target.value })} style={{ ...bS.input, height: 60 }} />
+                  </div>
+                )}
+              </div>
+
+              {/* QA結果 */}
+              {qaResult && (
+                <div style={{ margin: '0 18px 12px', padding: '14px 16px', borderRadius: 8, border: `1px solid ${qaResult.overall === 'pass' ? '#bbf7d0' : '#fecaca'}`, background: qaResult.overall === 'pass' ? '#f0fdf4' : '#fff7f7' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                    <strong style={{ fontSize: 13, color: qaResult.overall === 'pass' ? '#166534' : '#991b1b' }}>
+                      {qaResult.overall === 'pass' ? '✅ QA通過' : '⚠️ QA要修正'}
+                    </strong>
+                    <button onClick={() => setQaResult(null)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#999', fontSize: 16 }}>✕</button>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px 12px', marginBottom: 10 }}>
+                    {qaResult.checks?.map(c => (
+                      <div key={c.id} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, fontSize: 12 }}>
+                        <span style={{ flexShrink: 0 }}>{c.status === 'pass' ? '✅' : c.status === 'warn' ? '⚠️' : '❌'}</span>
+                        <div><span style={{ fontWeight: 600, color: '#333' }}>{c.label}: </span><span style={{ color: '#555' }}>{c.message}</span></div>
+                      </div>
+                    ))}
+                  </div>
+                  {qaResult.summary && (
+                    <div style={{ fontSize: 12, color: '#555', borderTop: '1px solid #e5e5e5', paddingTop: 8 }}>
+                      <strong>サマリー:</strong> {qaResult.summary}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 本文 */}
+              <div style={bS.body}>
+                {editing ? (
+                  <>
+                    <label style={bS.label}>本文 (Markdown)</label>
+                    <textarea value={editData.content} onChange={e => setEditData({ ...editData, content: e.target.value })} style={{ ...bS.input, height: 400, fontFamily: 'monospace', fontSize: 12 }} />
+                  </>
+                ) : (
+                  <pre style={bS.pre}>{selected.content}</pre>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Home() {
   const [tab, setTab]         = useState("import");
   const [files, setFiles]     = useState([]);
@@ -1335,7 +1744,8 @@ export default function Home() {
             {[
               ["import",     "PDFインポート"],
               ["drive-sync", "画像同期"],
-              ["blog",       "ブログ"],
+              ["blog",       "ブログ(EN)"],
+              ["jp-blog",    "SNSブログ(JP)"],
               ["orchestrate","🤖 自動化"],
               ["bugs",       "🐛 バグ"],
               ["history",    "履歴"],
@@ -1513,14 +1923,25 @@ export default function Home() {
             </div>
           )}
 
-          {/* Blog tab */}
+          {/* Blog tab (English) */}
           {tab === "blog" && (
             <div style={cardStyle}>
               <div style={{ marginBottom: "1.25rem" }}>
-                <h2 style={{ fontSize: 15, fontWeight: 600, color: "#1a1a1a", margin: "0 0 4px" }}>ブログ記事管理</h2>
+                <h2 style={{ fontSize: 15, fontWeight: 600, color: "#1a1a1a", margin: "0 0 4px" }}>ブログ記事管理（英語・不動産）</h2>
                 <p style={{ fontSize: 13, color: "#888", margin: 0 }}>AI が Google Trends + 日本語検索をもとに英語記事を自動生成します。レビュー後に公開してください。</p>
               </div>
               <BlogWriter />
+            </div>
+          )}
+
+          {/* JP Blog tab (Japanese SNS) */}
+          {tab === "jp-blog" && (
+            <div style={cardStyle}>
+              <div style={{ marginBottom: "1.25rem" }}>
+                <h2 style={{ fontSize: 15, fontWeight: 600, color: "#1a1a1a", margin: "0 0 4px" }}>SNSブログ記事管理（日本語・中国SNS）</h2>
+                <p style={{ fontSize: 13, color: "#888", margin: 0 }}>AI が中国SNS（RED・抖音・WeChat）に関する日本語記事を生成します。公開するとTKSNSサイトに即時反映されます。</p>
+              </div>
+              <JpBlogWriter />
             </div>
           )}
 
